@@ -185,7 +185,7 @@ function formatBankOptions(schoolName, capexUSD) {
 
 ━━━━━━━━━━━━━━━━━━━━━━
 _Interested? Reach out to the Ignis team to get started! 🔥_
-_Rates subject to bank approval & borrower profile._`;
+_Rates as of Feb 2026 (CBK base: 8.75%). Subject to bank approval._`;
 
   return msg;
 }
