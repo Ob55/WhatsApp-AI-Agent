@@ -3,6 +3,7 @@ const Fuse = require('fuse.js');
 const Institution = require('./models/Institution');
 const {
   calculateBudget,
+  checkFuelSpend,
   formatSummary,
   formatProjection,
   formatBankOptions
@@ -27,7 +28,7 @@ async function buildSearchIndex() {
   schoolNames = schools;
   fuseIndex = new Fuse(schools, {
     keys: ['name'],
-    threshold: 0.4,     // tolerant of typos
+    threshold: 0.4,
     distance: 100,
     includeScore: true
   });
@@ -50,7 +51,7 @@ function getSession(userId) {
     s.lastActive = Date.now();
     return s;
   }
-  const ns = { messages: [], lastActive: Date.now(), budgetState: null, awaitingFuelSpend: null };
+  const ns = { messages: [], lastActive: Date.now(), budgetState: null, awaitingFuelSpend: null, awaitingFuelConfirm: null };
   sessions.set(userId, ns);
   return ns;
 }
@@ -138,6 +139,24 @@ const KENYA_COUNTIES = [
   'uasin gishu','vihiga','wajir','west pokot'
 ];
 
+function fmt(n) {
+  return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+function extractNumber(msg) {
+  const match = msg.replace(/,/g, '').match(/\d+/);
+  return match ? parseInt(match[0]) : null;
+}
+
+function extractSchoolName(msg) {
+  return msg
+    .replace(/^(i want|i need|give me|can you|please|run|calculate|get me)\s*/i, '')
+    .replace(/^(budget|capex|cost|investment|pricing)\s*(for|of)?\s*/i, '')
+    .replace(/^(how much)\s*(for|is)?\s*/i, '')
+    .replace(/^(a|the)\s*/i, '')
+    .replace(/\?/g, '').trim();
+}
+
 async function routeMessage(msg, session) {
   const m = normalizeMsg(msg);
   await buildSearchIndex();
@@ -162,11 +181,53 @@ async function routeMessage(msg, session) {
     return CLEAN_COOKING_INFO;
   }
 
+  // ——— AWAITING FUEL CONFIRM (user got a warning, waiting for "go" or new amount) ———
+  if (session.awaitingFuelConfirm) {
+    const school = session.awaitingFuelConfirm.school;
+    const originalAmount = session.awaitingFuelConfirm.amount;
+
+    if (/^(go|proceed|yes|ok|okay|continue|calculate)/.test(m)) {
+      // User wants to proceed with the warned amount
+      const budget = calculateBudget(school.total_people, originalAmount);
+      session.budgetState = { school: school.name, budget };
+      session.awaitingFuelConfirm = null;
+      return formatSummary(school.name, budget);
+    }
+
+    // Check if they typed a new number
+    const newNum = extractNumber(msg);
+    if (newNum && newNum > 0) {
+      // Re-check sanity with new number
+      const warning = checkFuelSpend(newNum, school.total_people);
+      if (warning) {
+        session.awaitingFuelConfirm = { school, amount: newNum };
+        return warning;
+      }
+      // New number is good, calculate
+      const budget = calculateBudget(school.total_people, newNum);
+      session.budgetState = { school: school.name, budget };
+      session.awaitingFuelConfirm = null;
+      return formatSummary(school.name, budget);
+    }
+
+    return `Just type a new fuel amount in KES, or *"go"* to proceed with KES ${fmt(originalAmount)}.`;
+  }
+
   // ——— AWAITING FUEL SPEND (budget flow step 2) ———
   if (session.awaitingFuelSpend) {
     const num = extractNumber(msg);
     if (num && num > 0) {
       const school = session.awaitingFuelSpend;
+
+      // Sanity check
+      const warning = checkFuelSpend(num, school.total_people);
+      if (warning) {
+        session.awaitingFuelConfirm = { school, amount: num };
+        session.awaitingFuelSpend = null;
+        return warning;
+      }
+
+      // Amount looks good, calculate
       const budget = calculateBudget(school.total_people, num);
       session.budgetState = { school: school.name, budget };
       session.awaitingFuelSpend = null;
@@ -263,7 +324,6 @@ async function routeMessage(msg, session) {
   if (countyMatch || /(schools in|county|tell me about .+ county)/.test(m)) {
     let county = countyMatch;
     if (!county) {
-      // Extract county name from "schools in X" or "X county"
       const match = m.match(/(?:schools? in|about|county of)\s+(\w+)/) || m.match(/(\w+)\s+county/);
       if (match) county = match[1];
     }
@@ -302,7 +362,6 @@ async function routeMessage(msg, session) {
 
   // ——— FIND / SEARCH SCHOOL ———
   if (/(find|search|look up|lookup|show me|where is|details|info about|information)/.test(m) || m.length > 3) {
-    // Try fuzzy search with whatever they typed
     let searchTerm = msg
       .replace(/^(find|search|look up|lookup|show me|where is|details|info about|information on|information about|tell me about)\s*/i, '')
       .replace(/school|schools|institution/gi, '')
@@ -327,27 +386,7 @@ async function routeMessage(msg, session) {
   }
 
   // ——— FALLBACK TO LLM ———
-  return null; // signals to use LLM
-}
-
-// ——— Helpers ———
-
-function extractNumber(msg) {
-  const match = msg.replace(/,/g, '').match(/\d+/);
-  return match ? parseInt(match[0]) : null;
-}
-
-function extractSchoolName(msg) {
-  return msg
-    .replace(/^(i want|i need|give me|can you|please|run|calculate|get me)\s*/i, '')
-    .replace(/^(budget|capex|cost|investment|pricing)\s*(for|of)?\s*/i, '')
-    .replace(/^(how much)\s*(for|is)?\s*/i, '')
-    .replace(/^(a|the)\s*/i, '')
-    .replace(/\?/g, '').trim();
-}
-
-function fmt(n) {
-  return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return null;
 }
 
 // ——— LLM System Prompt ———
@@ -458,12 +497,11 @@ async function callLLM(messages) {
     } catch (error) {
       console.log(`⚠️ Model ${model} failed: ${error.message?.substring(0, 80)}`);
       if (!error.message?.includes('429') && !error.message?.includes('rate_limit') && !error.message?.includes('tool_use_failed')) {
-        throw error; // real error, don't retry
+        throw error;
       }
-      // try next model
     }
   }
-  return null; // all models failed
+  return null;
 }
 
 // ——— Main Handler ———
@@ -493,7 +531,6 @@ async function processMessage(userMessage, userId = 'default') {
   try {
     const response = await callLLM([{ role: 'system', content: SYSTEM_PROMPT }, ...session.messages]);
     if (!response) {
-      // ALL models failed — give helpful offline response
       return `I'm a bit overloaded right now 😅 But I can still help!\n\nTry these:\n• *"find [school name]"* — search schools\n• *"budget for [school]"* — run a budget\n• *"schools in [county]"* — browse by county\n• *"cooking stats"* — see the breakdown\n• *"help"* — see everything I can do`;
     }
 

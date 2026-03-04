@@ -10,11 +10,11 @@ const CO2_PER_KG_WOOD = 1.747;
 const EMISSION_CUT = 0.90;
 const KG_PER_TREE = 500;
 
-// Bank rates (CBK Jan 2026)
+// Bank rates (Ignis official)
 const BANKS = [
-  { name: 'Equity Bank', rate: 14.50 },
-  { name: 'ABSA Bank', rate: 13.75 },
-  { name: 'KCB Bank', rate: 14.80 }
+  { name: 'ABSA Bank', rate: 13.9 },
+  { name: 'Equity Bank', rate: 15.5 },
+  { name: 'KCB Bank', rate: 15.8 }
 ];
 
 function getCapex(people) {
@@ -50,39 +50,61 @@ function calculateBudget(totalPeople, dailyFuelKES) {
   };
 }
 
+// Fuel spend sanity check — returns warning string or null
+function checkFuelSpend(dailyFuelKES, totalPeople) {
+  const perPerson = dailyFuelKES / totalPeople;
+  const suggested = Math.round(totalPeople * 18);
+
+  if (perPerson < 5) {
+    return `⚠️ *Heads up!* KES ${fmt(dailyFuelKES)}/day for ${fmt(totalPeople)} students is only *KES ${perPerson.toFixed(1)} per student/day* — that seems very low.\n\nTypical range is *KES 15–25 per student/day* for wood fuel.\nFor ${fmt(totalPeople)} students, expect roughly *KES ${fmt(suggested)}/day*.\n\n💡 Type a new amount to adjust, or *"go"* to calculate with KES ${fmt(dailyFuelKES)} anyway.`;
+  }
+  if (perPerson < 10) {
+    return `⚠️ *Note:* KES ${fmt(dailyFuelKES)}/day for ${fmt(totalPeople)} students is *KES ${perPerson.toFixed(1)} per student/day* — a bit low.\n\nTypical range: *KES 15–25 per student/day*.\nSuggested: ~*KES ${fmt(suggested)}/day*.\n\n💡 Type a new amount to adjust, or *"go"* to proceed anyway.`;
+  }
+  return null;
+}
+
 function fmt(n) {
   return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-// ——— WhatsApp Styled Outputs ———
+// ——— PDF-Aligned WhatsApp Outputs ———
 
 function formatSummary(schoolName, budget) {
-  return `🔥 *IGNIS CLEAN COOKING BUDGET*
-━━━━━━━━━━━━━━━━━━━━
+  const capexKES = budget.capexUSD * EXCHANGE_RATE;
+  const savingsKES = Math.round(budget.annualSavingsUSD * EXCHANGE_RATE);
+  const tier = budget.totalPeople < 1000 ? 'Under 1,000 people' : budget.totalPeople <= 1500 ? '1,000–1,500 people' : 'Over 1,500 people';
 
+  return `🔥 *IGNIS CLEAN COOKING BUDGET REPORT*
+━━━━━━━━━━━━━━━━━━━━━━
+
+*About Ignis*
+Ignis Innovation Africa helps schools transition from wood/charcoal to clean, efficient cooking — cutting costs by up to 50% and reducing emissions by 90%.
+
+━━━ *Executive Summary* ━━━
 🏫 *${schoolName}*
-📍 *${budget.totalPeople}* students
+👥 ${fmt(budget.totalPeople)} people
+💰 Daily fuel spend: KES ${fmt(budget.dailyFuelSpendKES)}
 
-━━━ 💰 *CURRENT FUEL COST* ━━━
-  📌 Daily spend: *KES ${fmt(budget.dailyFuelSpendKES)}*
-  📌 Annual cost: *$${fmt(budget.annualFuelUSD)}*
-      _(KES ${fmt(budget.annualFuelKES)})_
+━━━ *Quick Comparison* ━━━
+🪵 Firewood annual cost: *$${fmt(budget.annualFuelUSD)}* (KES ${fmt(budget.annualFuelKES)})
+⚡ Ignis annual cost: *$${fmt(budget.ignisOpexUSD)}* (KES ${fmt(Math.round(budget.ignisOpexUSD * EXCHANGE_RATE))})
+✅ *Annual savings: $${fmt(budget.annualSavingsUSD)}* (KES ${fmt(savingsKES)})
 
-━━━ 🔧 *IGNIS INVESTMENT* ━━━
-  💵 One-time CAPEX: *$${fmt(budget.capexUSD)}*
-  ⚡ Annual Ignis cost: *$${fmt(budget.ignisOpexUSD)}*
+━━━ *Investment Required* ━━━
+💵 CAPEX: *$${fmt(budget.capexUSD)}* (KES ${fmt(Math.round(capexKES))})
+📌 Tier: ${tier}
 
-━━━ 📊 *YOUR SAVINGS* ━━━
-  ✅ Annual savings: *$${fmt(budget.annualSavingsUSD)}*
-  ⏱️ Payback period: *${budget.paybackYears} years*
+━━━ *Payback Period* ━━━
+⏱️ *${budget.paybackYears} years* to recover investment
 
-━━━ 🌍 *ENVIRONMENTAL IMPACT* ━━━
-  🌱 CO₂ reduced: *${fmt(budget.annualCO2Saved)} kg/year*
-  🌳 Trees saved: *${budget.treesSaved} per year*
+━━━ *Environmental Impact* ━━━
+🌱 CO₂ reduced: ${fmt(budget.annualCO2Saved)} kg/year
+🌳 Trees saved: ${budget.treesSaved}/year
 
-━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━
 👉 Type *"projection"* → 5-year breakdown
-👉 Type *"bank options"* → loan plans`;
+👉 Type *"bank options"* → financing plans`;
 }
 
 function formatProjection(schoolName, budget) {
@@ -99,36 +121,37 @@ function formatProjection(schoolName, budget) {
   }
 
   let msg = `📈 *5-YEAR COST PROJECTION*
-━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━
 🏫 *${schoolName}*
-_(with 5% annual inflation)_
+_(5% annual inflation applied)_
 
 `;
 
   for (const yr of years) {
-    const bar = yr.y <= 1 ? '▫️' : yr.cumSavings >= budget.capexUSD ? '🟢' : '🔵';
-    msg += `${bar} *Year ${yr.y}*
-  🪵 Firewood: $${fmt(yr.wood)}
-  ⚡ Ignis: $${fmt(yr.ignis)}
-  💰 Saved this year: *$${fmt(yr.saved)}*
-  📊 Total saved so far: *$${fmt(yr.cumSavings)}*
-
+    const marker = yr.cumSavings >= budget.capexUSD ? '🟢' : '🔵';
+    msg += `${marker} *Year ${yr.y}*
+  🪵 Firewood: $${fmt(yr.wood)} | ⚡ Ignis: $${fmt(yr.ignis)}
+  💰 Saved: *$${fmt(yr.saved)}* | Total: *$${fmt(yr.cumSavings)}*
 `;
   }
 
-  msg += `━━━━━━━━━━━━━━━━━━━━
+  msg += `
+━━━━━━━━━━━━━━━━━━━━━━
 🎯 *5-year total savings: $${fmt(years[4].cumSavings)}*
+${years[4].cumSavings >= budget.capexUSD ? '🟢 Investment fully recovered!' : '🔵 $' + fmt(budget.capexUSD - years[4].cumSavings) + ' remaining to recover'}
 
-👉 Type *"bank options"* → loan plans`;
+👉 Type *"bank options"* → financing plans`;
 
   return msg;
 }
 
 function formatBankOptions(schoolName, capexUSD) {
-  let msg = `🏦 *BANK FINANCING OPTIONS*
-━━━━━━━━━━━━━━━━━━━━
+  const capexKES = Math.round(capexUSD * EXCHANGE_RATE);
+
+  let msg = `🏦 *BANK FINANCING SCENARIOS*
+━━━━━━━━━━━━━━━━━━━━━━
 🏫 *${schoolName}*
-💰 Loan amount: *$${fmt(capexUSD)}*
+💰 Loan: *$${fmt(capexUSD)}* (KES ${fmt(capexKES)})
 
 `;
 
@@ -144,33 +167,32 @@ function formatBankOptions(schoolName, capexUSD) {
     const pay36 = Math.round(capexUSD * r / (1 - Math.pow(1 + r, -36)));
     const total36 = pay36 * 36;
 
-    msg += `━━━ *${bank.name}* ━━━
-📊 Interest rate: *${bank.rate}% p.a.*
-
-  📅 *1 Year (12 months)*
-     Monthly: *$${fmt(pay12)}*
-     Total repay: $${fmt(total12)}
-
-  📅 *2 Years (24 months)*
-     Monthly: *$${fmt(pay24)}*
-     Total repay: $${fmt(total24)}
-
-  📅 *3 Years (36 months)*
-     Monthly: *$${fmt(pay36)}*
-     Total repay: $${fmt(total36)}
+    msg += `*${bank.name}* (${bank.rate}% p.a.)
+  12 mo → $${fmt(pay12)}/mo | Total: $${fmt(total12)}
+  24 mo → $${fmt(pay24)}/mo | Total: $${fmt(total24)}
+  36 mo → $${fmt(pay36)}/mo | Total: $${fmt(total36)}
 
 `;
   }
 
-  msg += `━━━━━━━━━━━━━━━━━━━━
-_📌 Rates from CBK Jan 2026_
-_Actual rate depends on your profile_`;
+  msg += `━━━ *Technical Assumptions* ━━━
+📌 Exchange rate: 1 USD = KES ${EXCHANGE_RATE}
+📌 School days/year: ${SCHOOL_DAYS}
+📌 Inflation rate: ${INFLATION * 100}%
+📌 Firewood: KES ${FIREWOOD_KES_PER_KG}/kg
+📌 CO₂/kg wood: ${CO2_PER_KG_WOOD} kg
+📌 Emission reduction: ${EMISSION_CUT * 100}%
+
+━━━━━━━━━━━━━━━━━━━━━━
+_Interested? Reach out to the Ignis team to get started! 🔥_
+_Rates subject to bank approval & borrower profile._`;
 
   return msg;
 }
 
 module.exports = {
   calculateBudget,
+  checkFuelSpend,
   formatSummary,
   formatProjection,
   formatBankOptions,
