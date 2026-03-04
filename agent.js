@@ -41,6 +41,23 @@ function fuzzySearch(query, limit = 10) {
   return results.map(r => r.item);
 }
 
+// Smart search: try full query first, then progressively strip leading words
+function smartSearch(query, limit = 1) {
+  let matches = fuzzySearch(query, limit);
+  if (matches.length > 0) return matches;
+
+  // Strip words from the front until we find a match
+  const words = query.split(/\s+/);
+  for (let i = 1; i < words.length; i++) {
+    const partial = words.slice(i).join(' ');
+    if (partial.length > 2) {
+      matches = fuzzySearch(partial, limit);
+      if (matches.length > 0) return matches;
+    }
+  }
+  return [];
+}
+
 // ——— Session Management ———
 const sessions = new Map();
 const SESSION_TTL = 30 * 60 * 1000;
@@ -51,7 +68,14 @@ function getSession(userId) {
     s.lastActive = Date.now();
     return s;
   }
-  const ns = { messages: [], lastActive: Date.now(), budgetState: null, awaitingFuelSpend: null, awaitingFuelConfirm: null };
+  const ns = {
+    messages: [],
+    lastActive: Date.now(),
+    budgetState: null,
+    awaitingFuelSpend: null,
+    awaitingFuelConfirm: null,
+    lastSchool: null   // Track last mentioned school for "that school" references
+  };
   sessions.set(userId, ns);
   return ns;
 }
@@ -122,7 +146,7 @@ Here's what I can do for you:
 
 Just ask away! What do you need?`;
 
-// ——— Smart Keyword Router (no LLM needed for common requests) ———
+// ——— Smart Keyword Router ———
 
 function normalizeMsg(msg) {
   return msg.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
@@ -148,13 +172,43 @@ function extractNumber(msg) {
   return match ? parseInt(match[0]) : null;
 }
 
+// Improved school name extraction — handles many natural phrasings
 function extractSchoolName(msg) {
-  return msg
-    .replace(/^(i want|i need|give me|can you|please|run|calculate|get me)\s*/i, '')
-    .replace(/^(budget|capex|cost|investment|pricing)\s*(for|of)?\s*/i, '')
-    .replace(/^(how much)\s*(for|is)?\s*/i, '')
-    .replace(/^(a|the)\s*/i, '')
-    .replace(/\?/g, '').trim();
+  let name = msg;
+  // Strip filler/request prefixes (order matters!)
+  const strips = [
+    /^(hey|hi|hello|please|pls|kindly|sorry)\s+/i,
+    /^(i want to see|i want to get|i would like|can i get|can you get me|can you get|i want|i need|can i|can you|could you|would you|give me|get me|show me|let me see|let me get)\s+/i,
+    /^(to get|to see|to know|to check|to view|to run)\s+/i,
+    /^(the|a|an)\s+/i,
+    /^(budget|capex|cost|investment|pricing|price)\s*(report|calculation|estimate|breakdown)?\s*(for|of|on)?\s*/i,
+    /^(how much)\s*(for|is|does|will|would)?\s*/i,
+    /^(the|a|an)\s+/i,
+    /^(this|that)\s+(school|institution|one)\s*/i,
+    /^(school|institution)\s*/i,
+  ];
+  for (const re of strips) {
+    name = name.replace(re, '');
+  }
+  return name.replace(/\?/g, '').trim();
+}
+
+// Check if a name is a contextual reference ("that school", "it", "the same one", etc.)
+function isContextualRef(name) {
+  const n = name.toLowerCase().trim();
+  return /^(that|this|it|the same|same|that one|this one|the school|that school|this school)$/i.test(n) || n.length <= 2;
+}
+
+// Helper: start budget flow for a school
+function startBudgetFlow(school, session) {
+  session.lastSchool = school;
+  session.awaitingFuelSpend = school;
+  return `Found it! 🏫 *${school.name}* in *${school.county}*
+👥 *${fmt(school.total_people)}* students | 🍳 *${school.total_meals_per_day}* meals/day | 🪵 Currently using *${school.cooking_method}*
+
+To run the budget, I need one thing:
+💰 *What's the daily fuel spend in KES?*
+_(e.g. just type 5000)_`;
 }
 
 async function routeMessage(msg, session) {
@@ -181,29 +235,25 @@ async function routeMessage(msg, session) {
     return CLEAN_COOKING_INFO;
   }
 
-  // ——— AWAITING FUEL CONFIRM (user got a warning, waiting for "go" or new amount) ———
+  // ——— AWAITING FUEL CONFIRM (user got a sanity warning) ———
   if (session.awaitingFuelConfirm) {
     const school = session.awaitingFuelConfirm.school;
     const originalAmount = session.awaitingFuelConfirm.amount;
 
     if (/^(go|proceed|yes|ok|okay|continue|calculate)/.test(m)) {
-      // User wants to proceed with the warned amount
       const budget = calculateBudget(school.total_people, originalAmount);
       session.budgetState = { school: school.name, budget };
       session.awaitingFuelConfirm = null;
       return formatSummary(school.name, budget);
     }
 
-    // Check if they typed a new number
     const newNum = extractNumber(msg);
     if (newNum && newNum > 0) {
-      // Re-check sanity with new number
       const warning = checkFuelSpend(newNum, school.total_people);
       if (warning) {
         session.awaitingFuelConfirm = { school, amount: newNum };
         return warning;
       }
-      // New number is good, calculate
       const budget = calculateBudget(school.total_people, newNum);
       session.budgetState = { school: school.name, budget };
       session.awaitingFuelConfirm = null;
@@ -219,7 +269,6 @@ async function routeMessage(msg, session) {
     if (num && num > 0) {
       const school = session.awaitingFuelSpend;
 
-      // Sanity check
       const warning = checkFuelSpend(num, school.total_people);
       if (warning) {
         session.awaitingFuelConfirm = { school, amount: num };
@@ -227,7 +276,6 @@ async function routeMessage(msg, session) {
         return warning;
       }
 
-      // Amount looks good, calculate
       const budget = calculateBudget(school.total_people, num);
       session.budgetState = { school: school.name, budget };
       session.awaitingFuelSpend = null;
@@ -248,13 +296,21 @@ async function routeMessage(msg, session) {
 
   // ——— BUDGET REQUEST ———
   if (/(budget|capex|cost for|investment for|how much for|pricing for|cost of|price of|price for)/.test(m)) {
-    const schoolName = extractSchoolName(msg);
+    let schoolName = extractSchoolName(msg);
+
+    // Handle contextual references: "budget for that school", "budget for it"
+    if (isContextualRef(schoolName) || schoolName.length <= 2) {
+      if (session.lastSchool) {
+        return startBudgetFlow(session.lastSchool, session);
+      }
+      return `Sure! Which school do you want a budget for? 🏫\n\nJust say something like: *"budget for Lugulu Girls"*`;
+    }
+
     if (schoolName.length > 2) {
-      const matches = fuzzySearch(schoolName, 1);
+      // Smart search: tries full name, then strips leading words
+      const matches = smartSearch(schoolName, 1);
       if (matches.length > 0) {
-        const school = matches[0];
-        session.awaitingFuelSpend = school;
-        return `Found it! 🏫 *${school.name}* in *${school.county}*\n👥 *${fmt(school.total_people)}* students | 🍳 *${school.total_meals_per_day}* meals/day | 🪵 Currently using *${school.cooking_method}*\n\nTo run the budget, I need one thing:\n💰 *What's the daily fuel spend in KES?*\n_(e.g. just type 5000)_`;
+        return startBudgetFlow(matches[0], session);
       }
       return `Hmm, I couldn't find a school matching "${schoolName}" 🤔\n\nTry the full name or check the spelling. You can also say *"find [name]"* to search.`;
     }
@@ -369,8 +425,11 @@ async function routeMessage(msg, session) {
       .trim();
 
     if (searchTerm.length > 2) {
-      const matches = fuzzySearch(searchTerm, 5);
+      const matches = smartSearch(searchTerm, 5);
       if (matches.length > 0) {
+        // Track the first result as lastSchool
+        session.lastSchool = matches[0];
+
         if (matches.length === 1) {
           const s = matches[0];
           return `🏫 *${s.name}*\n━━━━━━━━━━━━━━━━━━━━\n📍 County: *${s.county}*\n🏫 Type: *${s.school_type}*\n👥 Students: *${fmt(s.total_people)}*\n🍳 Meals/day: *${s.total_meals_per_day}*\n🪵 Cooking: *${s.cooking_method}*\n\n💰 Want a budget? Say *"budget for ${s.name}"*`;
@@ -440,7 +499,7 @@ const tools = [
   }
 ];
 
-async function executeFindSchool(args) {
+async function executeFindSchool(args, session) {
   let query = {};
   if (args.name) query.name = { $regex: args.name, $options: 'i' };
   if (args.county) query.county = { $regex: args.county, $options: 'i' };
@@ -450,6 +509,12 @@ async function executeFindSchool(args) {
   const results = await Institution.find(query, 'name county cooking_method school_type total_people total_meals_per_day').limit(10).lean();
   const total = await Institution.countDocuments(query);
   if (results.length === 0) return JSON.stringify({ message: 'No schools found.' });
+
+  // Track last school from LLM tool calls too
+  if (results.length > 0 && session) {
+    session.lastSchool = results[0];
+  }
+
   return JSON.stringify({ showing: results.length, total_found: total, institutions: results });
 }
 
@@ -548,7 +613,7 @@ async function processMessage(userMessage, userId = 'default') {
         console.log(`🔧 ${name}`, args);
 
         let result;
-        if (name === 'find_school') result = await executeFindSchool(args);
+        if (name === 'find_school') result = await executeFindSchool(args, session);
         else if (name === 'get_stats') result = await executeGetStats(args);
         else result = JSON.stringify({ error: 'Unknown tool' });
 
