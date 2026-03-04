@@ -1,0 +1,21 @@
+{
+  "name": "clean-pipeline-agent",
+  "version": "1.0.0",
+  "description": "WhatsApp AI Agent for Clean Cooking Institution Pipeline",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node seed.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "csv-parser": "^3.2.0",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "groq-sdk": "^0.37.0",
+    "mongoose": "^9.2.3",
+    "twilio": "^5.12.2"
+  }
+}
