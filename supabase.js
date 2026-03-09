@@ -1,4 +1,5 @@
 // supabase.js — Data layer: Supabase client + in-memory cache + all queries
+const fetch = require('node-fetch');
 const { createClient } = require('@supabase/supabase-js');
 const Fuse = require('fuse.js');
 
@@ -7,7 +8,10 @@ const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
 
 if (!SUPABASE_KEY) console.warn('⚠️  SUPABASE_ANON_KEY not set — data queries will fail');
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY || 'placeholder');
+// Use node-fetch to avoid native fetch failures in some Node environments
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY || 'placeholder', {
+  global: { fetch }
+});
 
 // ——— In-Memory Cache ———
 let cache = [];
