@@ -3,7 +3,7 @@ const fetch = require('node-fetch');
 const { createClient } = require('@supabase/supabase-js');
 const Fuse = require('fuse.js');
 
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://tvymnsrudrggshjnkiqw.supabase.co';
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jatxsyqaeqqomwzowhv.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
 
 if (!SUPABASE_KEY) console.warn('⚠️  SUPABASE_ANON_KEY not set — data queries will fail');
