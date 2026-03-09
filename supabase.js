@@ -26,10 +26,13 @@ const DEFAULT_BANKS = [
   { bank_name: 'KCB Bank', rate: 15.8 }
 ];
 
-// ——— Build / Refresh Cache ———
-async function buildCache() {
+// ——— Build / Refresh Cache (with retry) ———
+async function buildCache(attempt = 1) {
+  const MAX_ATTEMPTS = 5;
+  const RETRY_DELAY = 10000; // 10s between retries
+
   try {
-    console.log('📦 Loading institutions from Supabase...');
+    console.log(`📦 Loading institutions from Supabase... (attempt ${attempt}/${MAX_ATTEMPTS})`);
     let all = [];
     let from = 0;
     const batch = 1000;
@@ -41,7 +44,10 @@ async function buildCache() {
         .range(from, from + batch - 1)
         .order('name');
 
-      if (error) { console.error('Supabase error:', error.message); break; }
+      if (error) {
+        console.error(`❌ Supabase query error (attempt ${attempt}): ${error.message}`);
+        throw new Error(error.message);
+      }
       if (!data || data.length === 0) break;
       all = all.concat(data);
       if (data.length < batch) break;
@@ -53,12 +59,18 @@ async function buildCache() {
     cacheReady = true;
     console.log(`✅ Cache ready: ${all.length} institutions`);
   } catch (err) {
-    console.error('buildCache error:', err.message);
+    console.error(`❌ buildCache error: ${err.message}`);
+    if (attempt < MAX_ATTEMPTS) {
+      console.log(`🔄 Retrying in ${RETRY_DELAY / 1000}s...`);
+      setTimeout(() => buildCache(attempt + 1), RETRY_DELAY);
+    } else {
+      console.error('⚠️  All retry attempts exhausted. Supabase may be paused — visit supabase.com to resume the project.');
+    }
   }
 }
 
 // Auto-refresh every hour
-setInterval(buildCache, 60 * 60 * 1000);
+setInterval(() => buildCache(1), 60 * 60 * 1000);
 
 // ——— Search Functions ———
 function fuzzySearch(query, limit = 8) {
